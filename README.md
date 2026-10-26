@@ -48,4 +48,4 @@ python main.py                          # 或双击 启动.bat
 
 ## 声明
 
-仅供个人自有账号使用,MIT License。
+MIT License
