@@ -1,0 +1,18 @@
+# 登录凭证(浏览器配置文件,含登录 cookie)—— 切勿提交
+browser_profile/
+
+# 本地运行时配置(默认值已内置到代码,首次运行自动生成)
+config.json
+
+# 逆向分析留档(第三方前端代码,不随仓库分发)
+.analysis/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# 系统
+Thumbs.db
+.DS_Store
