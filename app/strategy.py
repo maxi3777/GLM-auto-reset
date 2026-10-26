@@ -135,26 +135,36 @@ def fast_check_mode(snapshot: Snapshot, fast_5h: float, fast_week: float) -> boo
 
 
 def decide(snapshot: Snapshot, threshold_5h: float, threshold_week: float,
-           remaining: dict, fallback_week_for_5h: bool) -> Decision:
+           remaining: dict, fallback_week_for_5h: bool,
+           cooling: Optional[dict] = None) -> Decision:
     """根据额度与卡池决定动作。
 
     参数 remaining: {FIVE_HOUR: 剩余可用张数, WEEK: 剩余可用张数}(本轮预算)
+    参数 cooling: {FIVE_HOUR: bool, WEEK: bool} 对应额度窗口是否处于用卡后的冷却期
 
     规则:
     1. 周额度 >= 周阈值 -> 用周卡(周卡会同步回满5h,一张解决两个窗口)。
     2. 仅5小时 >= 5小时阈值 -> 用5小时卡;若无5小时卡/预算且允许兜底 -> 用周卡。
     3. 选中类型内取"优先"卡(expireTime 最早的可用卡)。
+    4. 触发窗口处于冷却期(刚用过卡,等用量数据刷新) -> 暂不动作,冷却只挡对应窗口:
+       5小时卡只冷却5小时窗口;周卡重置两个窗口,冷却两个窗口。
     """
-    w_exhausted = needs_reset(snapshot.week, threshold_week)
-    f_exhausted = needs_reset(snapshot.five_hour, threshold_5h)
+    cooling = cooling or {}
+    w_over = needs_reset(snapshot.week, threshold_week)
+    f_over = needs_reset(snapshot.five_hour, threshold_5h)
 
-    if not w_exhausted and not f_exhausted:
+    if not w_over and not f_over:
         return Decision("no_action", "额度未达阈值")
+
+    if w_over and cooling.get(WEEK):
+        return Decision("cooldown", "周额度已达阈值,周窗口冷却中,稍后自动重试")
+    if f_over and cooling.get(FIVE_HOUR):
+        return Decision("cooldown", "5小时额度已达阈值,5小时窗口冷却中,稍后自动重试")
 
     if snapshot.cards is None:
         return Decision("blocked", "尚未获取重置卡列表")
 
-    if w_exhausted:
+    if w_over:
         if remaining.get(WEEK, 0) <= 0:
             return Decision("blocked", "周额度已达阈值,但本轮周卡预算已用完")
         card = snapshot.cards.priority_card(WEEK)

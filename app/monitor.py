@@ -29,11 +29,22 @@ class Monitor(threading.Thread):
 
         # 运行期状态
         self.cards_used = {strategy.FIVE_HOUR: 0, strategy.WEEK: 0}  # 本轮已用卡数(按卡类型)
-        self.cooldown_until = 0.0
+        # 按额度窗口的冷却截止时间:5小时卡只冷却5小时窗口;周卡重置两个窗口,冷却两个窗口
+        self.cooldown = {strategy.FIVE_HOUR: 0.0, strategy.WEEK: 0.0}
         self.login_notified = False
         self.consecutive_failures = 0
         self._interval_now = config.interval_slow   # 当前生效的轮询间隔
-        self._last_blocked = ""                      # 上一个 blocked 原因(去重用)
+        self._last_blocked = ""                      # 上一个 blocked/cooldown 原因(去重用)
+
+    def _set_cooldown(self, reset_type: str, sec: float) -> None:
+        """用卡后对受影响的额度窗口设置冷却(等用量数据刷新,防止旧数据触发重复用卡)。"""
+        until = time.time() + sec
+        self.cooldown[strategy.FIVE_HOUR] = max(self.cooldown[strategy.FIVE_HOUR], until)
+        if reset_type == strategy.WEEK:
+            self.cooldown[strategy.WEEK] = max(self.cooldown[strategy.WEEK], until)
+
+    def _cooldown_remaining(self) -> int:
+        return max(0, int(max(self.cooldown.values()) - time.time()))
 
     # -------------------------------------------------- control
     def stop(self) -> None:
@@ -157,25 +168,24 @@ class Monitor(threading.Thread):
             threshold_5h=self.cfg.threshold_5h, threshold_week=self.cfg.threshold_week,
             speed="快检" if fast else "慢检",
             dry_run=self.cfg.dry_run, auto_reset=self.cfg.auto_reset,
+            cooldown=self._cooldown_remaining(),  # 每次检查都上报,过期后归 0 让界面隐藏
         )
 
         # 5. 决策与动作
         if not self.cfg.auto_reset:
             return
-        if time.time() < self.cooldown_until:
-            remain = int(self.cooldown_until - time.time())
-            self.ui.post_state(cooldown=remain)
-            return
 
+        cooling = {k: time.time() < until for k, until in self.cooldown.items()}
         remaining = {
             strategy.FIVE_HOUR: self.cfg.max_cards_5h - self.cards_used[strategy.FIVE_HOUR],
             strategy.WEEK: self.cfg.max_cards_week - self.cards_used[strategy.WEEK],
         }
         decision = strategy.decide(snap, self.cfg.threshold_5h, self.cfg.threshold_week,
-                                   remaining, self.cfg.fallback_week_for_5h)
-        if decision.action == "blocked":
+                                   remaining, self.cfg.fallback_week_for_5h,
+                                   cooling=cooling)
+        if decision.action in ("blocked", "cooldown"):
             if decision.reason != self._last_blocked:
-                self.log(decision.reason, "warn")
+                self.log(decision.reason, "warn" if decision.action == "blocked" else "info")
                 self._last_blocked = decision.reason
             return
         if decision.action != "use_card":
@@ -189,7 +199,7 @@ class Monitor(threading.Thread):
             label += "(兜底)"
         if self.cfg.dry_run:
             self.log(f"[演练] 额度已达阈值,本应使用 {label};演练模式未真正调用接口", "warn")
-            self.cooldown_until = time.time() + 60
+            self._set_cooldown(decision.reset_type, 60)
             return
 
         self._perform_use(decision, label)
@@ -219,7 +229,7 @@ class Monitor(threading.Thread):
             self.log(f"使用失败 [{code}] {msg}", "error")
             if CARD_UNAVAILABLE_MSG in msg:
                 self.log("卡片状态已变化,稍后重新获取列表", "warn")
-            self.cooldown_until = time.time() + 60
+            self._set_cooldown(decision.reset_type, 60)
 
     def _resolve_ambiguous(self, decision, label: str) -> None:
         """POST 结果未知时:通过只读接口判断是否已生效,不做任何重试。"""
@@ -237,15 +247,15 @@ class Monitor(threading.Thread):
                 self._on_use_success(decision, label, quiet=True)
             else:
                 self.log("核对结果:未生效。已停止自动重试,10 分钟后再评估", "error")
-                self.cooldown_until = time.time() + 600
+                self._set_cooldown(decision.reset_type, 600)
         except Exception as e:
             self.log(f"状态核对失败({e}),已进入长冷却,避免重复消耗", "error")
-            self.cooldown_until = time.time() + 600
+            self._set_cooldown(decision.reset_type, 600)
 
     def _on_use_success(self, decision, label: str, quiet: bool = False) -> None:
         kind_key = decision.reset_type
         self.cards_used[kind_key] += 1
-        self.cooldown_until = time.time() + self.cfg.cooldown_sec
+        self._set_cooldown(decision.reset_type, self.cfg.cooldown_sec)
         kind = "5小时" if decision.reset_type == strategy.FIVE_HOUR else "周"
         used = self.cards_used[kind_key]
         limit = self.cfg.max_cards_5h if kind_key == strategy.FIVE_HOUR else self.cfg.max_cards_week

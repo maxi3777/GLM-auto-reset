@@ -175,7 +175,7 @@ class TestBudgetAndSafety:
             assert m.cards_used[strategy.FIVE_HOUR] == 1
             assert server.state.used_count() == 1
             server.state.set_percent(99.0, 40.0)  # 又用满了
-            m.cooldown_until = 0.0                # 排除冷却因素,单测预算拦截
+            m.cooldown = {k: 0.0 for k in m.cooldown}  # 排除冷却因素,单测预算拦截
             run_cycles(m)
             assert m.cards_used[strategy.FIVE_HOUR] == 1
             assert server.state.used_count() == 1
@@ -204,14 +204,46 @@ class TestBudgetAndSafety:
         try:
             run_cycles(m)
             assert used(m) == 1  # 周卡一张把两个窗口都重置了
-            # 人为再次把额度拉满,冷却期内不得再动卡
+            # 人为再次把额度拉满,冷却期内不得再动卡(周卡冷却覆盖两个窗口)
             server.state.set_percent(99.0, 99.0)
             run_cycles(m)
             assert used(m) == 1 and server.state.used_count() == 1
             # 冷却结束后才允许第二张
-            m.cooldown_until = time.time() - 1
+            m.cooldown = {k: 0.0 for k in m.cooldown}
             run_cycles(m)
             assert used(m) == 2
+        finally:
+            m.browser.close()
+
+    def test_5h_cooldown_does_not_block_week_trigger(self, server, cfg):
+        # 5小时卡只冷却5小时窗口:冷却期间周额度到阈值应立即用周卡,不被拖延
+        server.state.set_percent(99.0, 40.0)
+        server.state.reset_cards()
+        server.state.use_requests.clear()
+        m = new_monitor(cfg(cooldown_sec=300))
+        try:
+            run_cycles(m)                       # 用 5h 卡
+            assert m.cards_used[strategy.FIVE_HOUR] == 1
+            assert time.time() < m.cooldown[strategy.FIVE_HOUR]   # 5h 窗口确在冷却
+            server.state.set_percent(60.0, 99.9)  # 周额度到阈值
+            run_cycles(m)                       # 不等 5h 冷却结束,立即用周卡
+            assert m.cards_used[strategy.WEEK] == 1
+            assert server.state.use_requests[-1]["resetType"] == "WEEK"
+        finally:
+            m.browser.close()
+
+    def test_cooldown_display_clears_after_expiry(self, server, cfg):
+        # 回归:冷却结束后界面不得残留"冷却 Ns"——每次检查都上报 cooldown,过期为 0
+        server.state.set_percent(99.0, 40.0)
+        server.state.reset_cards()
+        m = new_monitor(cfg(cooldown_sec=300))
+        try:
+            run_cycles(m)                       # 用 5h 卡(状态上报发生在用卡之前)
+            run_cycles(m)                       # 冷却期内的下一轮检查 -> cooldown>0
+            assert m.ui.states[-1].get("cooldown", 0) > 0
+            m.cooldown = {k: 0.0 for k in m.cooldown}  # 冷却到期
+            run_cycles(m)
+            assert m.ui.states[-1].get("cooldown") == 0  # 归 0,界面隐藏
         finally:
             m.browser.close()
 
@@ -250,7 +282,7 @@ class TestBudgetAndSafety:
             assert used(m) == 0
             assert server.state.used_count() == 0
             assert m.ui.has_log("使用失败")
-            assert m.cooldown_until > time.time()
+            assert max(m.cooldown.values()) > time.time()
             # 冷却期内即使再检查也不重复调用
             n_calls = len(server.state.use_requests)
             run_cycles(m)
@@ -274,7 +306,7 @@ class TestBudgetAndSafety:
             assert server.state.used_count() == 0
             assert m.ui.has_log("结果未知") or m.ui.has_log("未生效")
             # 长冷却
-            assert m.cooldown_until >= time.time() + 500
+            assert max(m.cooldown.values()) >= time.time() + 500
         finally:
             server.state.scenario.pop("hang_use", None)
             m.browser.close()

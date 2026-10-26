@@ -93,6 +93,44 @@ class TestFastCheckMode:
 FULL_BUDGET = {strategy.FIVE_HOUR: 9, strategy.WEEK: 9}
 
 
+class TestCooling:
+    def test_week_cooling_delays_week_action(self):
+        snap = strategy.parse_quota(quota_payload(50, 99))
+        snap.cards = strategy.parse_cards(cards_payload())
+        d = strategy.decide(snap, 97, 97, FULL_BUDGET, True,
+                            cooling={strategy.WEEK: True})
+        assert d.action == "cooldown"
+
+    def test_5h_cooling_delays_5h_action(self):
+        snap = strategy.parse_quota(quota_payload(99, 50))
+        snap.cards = strategy.parse_cards(cards_payload())
+        d = strategy.decide(snap, 97, 97, FULL_BUDGET, True,
+                            cooling={strategy.FIVE_HOUR: True})
+        assert d.action == "cooldown"
+
+    def test_5h_cooling_does_not_block_week(self):
+        # 5小时卡只冷却5小时窗口:周额度触发不受影响
+        snap = strategy.parse_quota(quota_payload(50, 99))
+        snap.cards = strategy.parse_cards(cards_payload())
+        d = strategy.decide(snap, 97, 97, FULL_BUDGET, True,
+                            cooling={strategy.FIVE_HOUR: True})
+        assert d.action == "use_card" and d.reset_type == strategy.WEEK
+
+    def test_week_cooling_covers_both_windows(self):
+        # 周卡重置两个窗口:5h 冷却 + 5h 超阈值 -> 也不得再动 5h 卡
+        snap = strategy.parse_quota(quota_payload(99, 50))
+        snap.cards = strategy.parse_cards(cards_payload())
+        d = strategy.decide(snap, 97, 97, FULL_BUDGET, True,
+                            cooling={strategy.FIVE_HOUR: True, strategy.WEEK: True})
+        assert d.action == "cooldown"
+
+    def test_no_cooling_unchanged(self):
+        snap = strategy.parse_quota(quota_payload(99, 50))
+        snap.cards = strategy.parse_cards(cards_payload())
+        d = strategy.decide(snap, 97, 97, FULL_BUDGET, True, cooling={})
+        assert d.action == "use_card"
+
+
 class TestDecide:
     def test_below_threshold_no_action(self):
         snap = strategy.parse_quota(quota_payload(36, 83))

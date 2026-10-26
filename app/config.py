@@ -12,17 +12,17 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
 @dataclass
 class Config:
     # ---- 触发阈值:已用百分比 >= 阈值时触发重置(精确值,按 currentValue/usage 计算)----
-    threshold_5h: float = 99.0
-    threshold_week: float = 99.5
+    threshold_5h: float = 97.0
+    threshold_week: float = 97.0
     # ---- 每种卡在程序一次运行期间的最大使用数(硬上限,重启才重置)----
-    max_cards_5h: int = 3
+    max_cards_5h: int = 2
     max_cards_week: int = 2
     # ---- 双速轮询:慢检查/快检查间隔(秒) ----
-    interval_slow: int = 30
-    interval_fast: int = 5
+    interval_slow: int = 60
+    interval_fast: int = 10
     # ---- 快检查开启阈值:5小时或周额度任一达到对应阈值即进入快检查 ----
-    fast_5h: float = 93.0
-    fast_week: float = 98.0
+    fast_5h: float = 85.0
+    fast_week: float = 95.0
     # ---- 其他 ----
     auto_reset: bool = True
     dry_run: bool = False
